@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	cfg "ibp-geodns/src/common/config"
-	log "ibp-geodns/src/common/logging"
-	max "ibp-geodns/src/common/maxmind"
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
+	log "github.com/ibp-network/ibp-geodns-libs/logging"
+	max "github.com/ibp-network/ibp-geodns-libs/maxmind"
 )
 
 type EthRPCRequest struct {

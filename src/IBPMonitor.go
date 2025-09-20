@@ -7,13 +7,15 @@ import (
 	"syscall"
 	"time"
 
-	api "ibp-geodns/src/IBPMonitor/api"
-	"ibp-geodns/src/IBPMonitor/monitor"
-	cfg "ibp-geodns/src/common/config"
-	dat "ibp-geodns/src/common/data"
-	log "ibp-geodns/src/common/logging"
-	max "ibp-geodns/src/common/maxmind"
-	natsCommon "ibp-geodns/src/common/nats"
+	api "github.com/ibp-network/ibp-geodns-monitor/src/api"
+
+	"github.com/ibp-network/ibp-geodns-monitor/src/monitor"
+
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
+	dat "github.com/ibp-network/ibp-geodns-libs/data"
+	log "github.com/ibp-network/ibp-geodns-libs/logging"
+	max "github.com/ibp-network/ibp-geodns-libs/maxmind"
+	natsCommon "github.com/ibp-network/ibp-geodns-libs/nats"
 )
 
 var version = cfg.GetVersion()

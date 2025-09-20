@@ -1,10 +1,11 @@
 package monitor
 
 import (
-	cfg "ibp-geodns/src/common/config"
-	log "ibp-geodns/src/common/logging"
 	"sync"
 	"time"
+
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
+	log "github.com/ibp-network/ibp-geodns-libs/logging"
 )
 
 type CheckManager struct {

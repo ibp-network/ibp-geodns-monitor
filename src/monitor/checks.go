@@ -1,11 +1,12 @@
 package monitor
 
 import (
-	cfg "ibp-geodns/src/common/config"
-	dat "ibp-geodns/src/common/data"
-	natsCommon "ibp-geodns/src/common/nats"
 	"net/url"
 	"strings"
+
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
+	dat "github.com/ibp-network/ibp-geodns-libs/data"
+	natsCommon "github.com/ibp-network/ibp-geodns-libs/nats"
 )
 
 var CheckRegistry = struct {

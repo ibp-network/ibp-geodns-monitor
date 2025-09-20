@@ -2,9 +2,10 @@ package monitor
 
 import (
 	"container/heap"
-	cfg "ibp-geodns/src/common/config"
 	"sync"
 	"time"
+
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
 )
 
 type CheckItem struct {

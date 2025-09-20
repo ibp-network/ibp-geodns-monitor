@@ -3,7 +3,7 @@ package monitor
 import (
 	"time"
 
-	cfg "ibp-geodns/src/common/config"
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
 )
 
 type Result struct {

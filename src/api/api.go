@@ -5,9 +5,10 @@ import (
 	"net/http"
 	"time"
 
-	cfg "ibp-geodns/src/common/config"
-	dat "ibp-geodns/src/common/data"
-	log "ibp-geodns/src/common/logging"
+	dat "github.com/ibp-network/ibp-geodns-libs/data"
+	log "github.com/ibp-network/ibp-geodns-libs/logging"
+
+	cfg "github.com/ibp-network/ibp-geodns-libs/config"
 )
 
 func keySite(chk string, v6 bool) string {
