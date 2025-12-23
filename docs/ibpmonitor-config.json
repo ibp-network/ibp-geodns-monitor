@@ -1,6 +1,6 @@
 {
     "System": {
-        "WorkDir": "/opt/ibp-geodns/",
+        "WorkDir": "/opt/ibp-geodns-monitor/",
         "LogLevel": "Debug",
         "ConfigUrls": {
             "StaticDNSConfig": "https://raw.githubusercontent.com/ibp-network/config/refs/heads/main/geodns-static.json",
@@ -12,63 +12,71 @@
         "ConfigReloadTime": 3600,
         "MinimumOfflineTime": 900
     },
-    "Maxmind": {
-        "AccountID": "",
-        "LicenseKey": ""
-    },
     "Nats": {
-        "NodeID": "MONITOR1",
-        "Url": "nats://127.0.0.1:5222",
-        "User": "MONITOR1",
-        "Pass": "password123"
+        "NodeID": "natsuser",
+        "Url": "nats://127.0.0.1:4222",
+        "User": "natsuser",
+        "Pass": "natspasswd"
     },
     "Mysql": {
-        "Host": "localhosts",
+        "Host": "localhost",
         "Port": "3306",
-        "User": "ibpmonitor",
-        "Pass": "password123",
-        "DB": "ibpmonitor"
+        "User": "monitor",
+        "Pass": "dbpasswd",
+        "DB": "monitor"
+    },
+    "Maxmind": {
+        "MaxmindDBPath": "/opt/ibp-geodns-monitor/tmp/maxmind/",
+        "AccountID": "12345",
+        "LicenseKey": "licensekey"
     },
     "MonitorApi": {
         "ListenAddress": "0.0.0.0",
         "ListenPort": "6101"
     },
+    "DnsApi": {
+        "ListenAddress": "0.0.0.0",
+        "ListenPort": "6100",
+        "MonitorAddress": "127.0.0.1",
+        "MonitorPort": "6101",
+        "RefreshIntervalSeconds": 30
+    },
+    "CheckWorkers": {
+        "numWorkers": 100,
+        "separationInterval": 100
+    },
     "Checks": [
         {
             "Name": "ping",
-            "Enabled": 1,
+            "Enabled": 0,
             "CheckType": "site",
             "Timeout": 30,
-            "CheckInterval": 120,
-            "ExtraOptions": {
-                "PingCount": 15,
-                "PingInterval": 100,
-                "PingTimeout": 1600,
-                "PingTTL": 254,
-                "PingSize": 28,
-                "MaxPacketLoss": 25,
-                "MaxLatency": 800
-            }
+            "minimumInterval": 60,
+            "ExtraOptions": {"PingCount": 15, "PingInterval": 100, "PingTimeout": 1600, "PingTTL": 254, "PingSize": 28, "MaxPacketLoss": 25, "MaxLatency": 800}
         },
         {
             "Name": "ssl",
-            "Enabled": 1,
+            "Enabled": 0,
             "CheckType": "domain",
             "Timeout": 90,
-            "CheckInterval": 1800,
-            "ExtraOptions": {
-                "ConnectTimeout": 10
-            }
+            "minimumInterval": 300,
+            "ExtraOptions": {"ConnectTimeout": 10}
         },
         {
             "Name": "wss",
             "Enabled": 1,
             "CheckType": "endpoint",
             "Timeout": 90,
-            "CheckInterval": 1800,
-            "ExtraOptions": {
-                "ConnectTimeout": 10
-            }
+            "minimumInterval": 300,
+            "ExtraOptions": {"ConnectTimeout": 10}
+        },
+        {
+            "Name": "ethrpc",
+            "Enabled": 0,
+            "CheckType": "endpoint",
+            "Timeout": 30,
+            "minimumInterval": 300,
+            "ExtraOptions": {"ConnectTimeout": 10}
         }
     ]
 }
