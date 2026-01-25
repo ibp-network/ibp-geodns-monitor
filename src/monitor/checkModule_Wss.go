@@ -30,6 +30,7 @@ func init() {
 func WssCheck(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member) {
 	ip4 := member.Service.ServiceIPv4
 	ip6 := member.Service.ServiceIPv6
+	readTimeoutSec := getIntOption(check.ExtraOptions, "ReadTimeout", 15)
 
 	if ip4 == "" && ip6 == "" {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false, "No IPv4 or IPv6 configured", nil, false)
@@ -37,15 +38,15 @@ func WssCheck(check cfg.Check, endpoint string, service cfg.Service, member cfg.
 	}
 
 	if ip4 != "" {
-		runWssSingle(check, endpoint, service, member, ip4, false)
+		runWssSingle(check, endpoint, service, member, ip4, false, readTimeoutSec)
 	}
 
 	if ip6 != "" {
-		runWssSingle(check, endpoint, service, member, ip6, true)
+		runWssSingle(check, endpoint, service, member, ip6, true, readTimeoutSec)
 	}
 }
 
-func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member, ip string, isIPv6 bool) {
+func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member, ip string, isIPv6 bool, readTimeoutSec int) {
 	u := max.ParseUrl(endpoint)
 	reconstructedURL := fmt.Sprintf("%s%s%s", u.Protocol, u.Domain, u.Directory)
 
@@ -82,14 +83,13 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 		return
 	}
 
-	_, _, err = c.ReadMessage()
-	if err != nil {
-		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Failed to read JSON-RPC response: %v", err), nil, isIPv6)
+	if _, readErr := readWithDeadline(c, readTimeoutSec, "chain_getBlockHash(latest)"); readErr != nil {
+		UpdateEndpointResultLocal(check, member, service, endpoint, false, readErr.Error(), nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
 		return
 	}
 
-	isFullArchive, err := checkFullArchive(c)
+	isFullArchive, err := checkFullArchive(c, readTimeoutSec)
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Full archive check failed: %v", err), nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
@@ -102,7 +102,7 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 		return
 	}
 
-	isCorrectNetwork, err := checkNetwork(c, service.Configuration.NetworkName, service.Configuration.StateRootHash)
+	isCorrectNetwork, err := checkNetwork(c, service.Configuration.NetworkName, service.Configuration.StateRootHash, readTimeoutSec)
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Network check failed: %v", err), nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
@@ -115,7 +115,7 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 		return
 	}
 
-	hasEnoughPeers, isSyncing, err := checkPeers(c)
+	hasEnoughPeers, isSyncing, err := checkPeers(c, readTimeoutSec)
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Peer check failed: %v", err), nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
@@ -139,7 +139,7 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 }
 
 // The rest is unchanged
-func checkFullArchive(c *websocket.Conn) (bool, error) {
+func checkFullArchive(c *websocket.Conn, readTimeoutSec int) (bool, error) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		Method:  "chain_getBlockHash",
@@ -151,9 +151,9 @@ func checkFullArchive(c *websocket.Conn) (bool, error) {
 		return false, fmt.Errorf("failed to send blockHash(0) request")
 	}
 
-	_, message, err := c.ReadMessage()
+	message, err := readWithDeadline(c, readTimeoutSec, "chain_getBlockHash(0)")
 	if err != nil {
-		return false, fmt.Errorf("failed to read blockHash(0) response: %v", err)
+		return false, err
 	}
 
 	var resp map[string]interface{}
@@ -169,7 +169,7 @@ func checkFullArchive(c *websocket.Conn) (bool, error) {
 	return true, nil
 }
 
-func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHash string) (bool, error) {
+func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHash string, readTimeoutSec int) (bool, error) {
 	// First check the chain name
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
@@ -181,9 +181,9 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 		return false, fmt.Errorf("failed to send system_chain request")
 	}
 
-	_, message, err := c.ReadMessage()
+	message, err := readWithDeadline(c, readTimeoutSec, "system_chain")
 	if err != nil {
-		return false, fmt.Errorf("failed to read system_chain response: %v", err)
+		return false, err
 	}
 
 	var resp map[string]interface{}
@@ -219,9 +219,9 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 		return false, fmt.Errorf("failed to send chain_getBlockHash(0) for genesis block")
 	}
 
-	_, blockHashMessage, err := c.ReadMessage()
+	blockHashMessage, err := readWithDeadline(c, readTimeoutSec, "chain_getBlockHash(0)")
 	if err != nil {
-		return false, fmt.Errorf("failed to read chain_getBlockHash(0) response: %v", err)
+		return false, err
 	}
 
 	var blockHashResp map[string]interface{}
@@ -246,9 +246,9 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 		return false, fmt.Errorf("failed to send chain_getHeader request for genesis block")
 	}
 
-	_, headerMessage, err := c.ReadMessage()
+	headerMessage, err := readWithDeadline(c, readTimeoutSec, "chain_getHeader(genesis)")
 	if err != nil {
-		return false, fmt.Errorf("failed to read chain_getHeader response: %v", err)
+		return false, err
 	}
 
 	var headerResp map[string]interface{}
@@ -277,7 +277,7 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 	return true, nil
 }
 
-func checkPeers(c *websocket.Conn) (bool, bool, error) {
+func checkPeers(c *websocket.Conn, readTimeoutSec int) (bool, bool, error) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		Method:  "system_health",
@@ -288,7 +288,7 @@ func checkPeers(c *websocket.Conn) (bool, bool, error) {
 		return false, false, fmt.Errorf("failed to send system_health request")
 	}
 
-	_, message, err := c.ReadMessage()
+	message, err := readWithDeadline(c, readTimeoutSec, "system_health")
 	if err != nil {
 		return false, false, err
 	}
@@ -329,4 +329,18 @@ func sendJSONRPCRequest(c *websocket.Conn, request JSONRPCRequest) bool {
 	}
 
 	return true
+}
+
+func readWithDeadline(c *websocket.Conn, timeoutSec int, desc string) ([]byte, error) {
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	if err := c.SetReadDeadline(time.Now().Add(time.Duration(timeoutSec) * time.Second)); err != nil {
+		return nil, fmt.Errorf("%s: failed to set read deadline: %w", desc, err)
+	}
+	_, message, err := c.ReadMessage()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", desc, err)
+	}
+	return message, nil
 }
