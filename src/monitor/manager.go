@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"reflect"
 	"sync"
 	"time"
 
@@ -15,6 +16,11 @@ type CheckManager struct {
 	separationMs int
 	shutdownCh   chan struct{}
 	wg           sync.WaitGroup
+	lastConfig   cfg.Config
+	generation   int
+	lastRuns     map[string]time.Time
+	lastRunsMu   sync.Mutex
+	activeWG     sync.WaitGroup
 }
 
 type Worker struct {
@@ -42,6 +48,9 @@ func NewCheckManager() *CheckManager {
 		numWorkers:   numWorkers,
 		separationMs: separationMs,
 		shutdownCh:   make(chan struct{}),
+		generation:   1,
+		lastRuns:     make(map[string]time.Time),
+		activeWG:     sync.WaitGroup{},
 	}
 }
 
@@ -50,6 +59,7 @@ func (cm *CheckManager) Start() {
 		cm.numWorkers, cm.separationMs)
 
 	// Initialize all checks in the queue
+	cm.lastConfig = cfg.GetConfig()
 	cm.initializeChecks()
 
 	// Start workers with staggered delays
@@ -95,6 +105,9 @@ func (cm *CheckManager) initializeChecks() {
 	}
 
 	log.Log(log.Info, "Initialized %d checks in queue", cm.checkQueue.Len())
+
+	// Prune lastRuns to only current items
+	cm.pruneLastRuns()
 }
 
 func (cm *CheckManager) initializeSiteChecks(check cfg.Check) {
@@ -105,9 +118,10 @@ func (cm *CheckManager) initializeSiteChecks(check cfg.Check) {
 				Type:            "site",
 				Check:           check,
 				Member:          member,
-				LastExecuted:    time.Time{}, // Never executed
 				MinimumInterval: time.Duration(check.MinimumInterval) * time.Second,
+				Generation:      cm.generation,
 			}
+			cm.applyLastExecuted(item)
 			cm.checkQueue.Add(item)
 		}
 	}
@@ -133,9 +147,10 @@ func (cm *CheckManager) initializeDomainChecks(check cfg.Check) {
 						Member:          mem,
 						Service:         svc,
 						Domain:          domain,
-						LastExecuted:    time.Time{},
 						MinimumInterval: time.Duration(check.MinimumInterval) * time.Second,
+						Generation:      cm.generation,
 					}
+					cm.applyLastExecuted(item)
 					cm.checkQueue.Add(item)
 				}
 			}
@@ -164,9 +179,10 @@ func (cm *CheckManager) initializeEndpointChecks(check cfg.Check) {
 							Service:         svc,
 							Endpoint:        endpoint,
 							Domain:          parseUrlForDomain(endpoint),
-							LastExecuted:    time.Time{},
 							MinimumInterval: time.Duration(check.MinimumInterval) * time.Second,
+							Generation:      cm.generation,
 						}
+						cm.applyLastExecuted(item)
 						cm.checkQueue.Add(item)
 					}
 				}
@@ -193,8 +209,22 @@ func (cm *CheckManager) maintainQueue() {
 }
 
 func (cm *CheckManager) updateChecksFromConfig() {
-	// This could be enhanced to detect config changes and add/remove checks
-	// For now, it's a placeholder for future enhancement
+	currentCfg := cfg.GetConfig()
+	if reflect.DeepEqual(currentCfg, cm.lastConfig) {
+		return // no change, skip reload
+	}
+
+	// Wait for in-flight checks to finish so we don't lose their last-run times
+	cm.activeWG.Wait()
+
+	// Bump generation to invalidate in-flight/stale items
+	cm.generation++
+
+	// Flush and rebuild the queue from the latest configuration
+	cm.checkQueue.Clear()
+	cm.initializeChecks()
+
+	cm.lastConfig = currentCfg
 }
 
 func (w *Worker) run() {
@@ -212,32 +242,88 @@ func (w *Worker) run() {
 		w.id, interval, w.startDelay)
 
 	// Execute first check immediately after delay
-	w.executeNextCheck()
+	w.executeReadyChecks()
 
 	for {
 		select {
 		case <-w.ticker.C:
-			w.executeNextCheck()
+			w.executeReadyChecks()
 		case <-w.manager.shutdownCh:
 			return
 		}
 	}
 }
 
-func (w *Worker) executeNextCheck() {
-	item := w.manager.checkQueue.GetNext()
-	if item == nil {
-		return
+func (w *Worker) executeReadyChecks() {
+	processed := 0
+	for {
+		if processed >= 1 {
+			return
+		}
+
+		item := w.manager.checkQueue.GetNext(w.manager.generation)
+		if item == nil {
+			return
+		}
+
+		// Skip stale items from previous generations
+		if item.Generation != w.manager.generation {
+			continue
+		}
+
+		// Execute the check
+		w.manager.activeWG.Add(1)
+		w.executeCheck(item)
+		w.manager.activeWG.Done()
+
+		// Update last executed time
+		item.LastExecuted = time.Now()
+		w.manager.recordLastRun(item)
+
+		// Re-queue the check only if generation is still current
+		if item.Generation == w.manager.generation {
+			w.manager.checkQueue.Add(item)
+		}
+		processed++
+	}
+}
+
+func (cm *CheckManager) applyLastExecuted(item *CheckItem) {
+	cm.lastRunsMu.Lock()
+	defer cm.lastRunsMu.Unlock()
+	if t, ok := cm.lastRuns[itemKey(item)]; ok {
+		item.LastExecuted = t
+	}
+}
+
+func itemKey(it *CheckItem) string {
+	return it.Type + "|" + it.Check.Name + "|" + it.Member.Details.Name + "|" + it.Domain + "|" + it.Endpoint +
+		"|" + it.Member.Service.ServiceIPv4 + "|" + it.Member.Service.ServiceIPv6
+}
+
+func (cm *CheckManager) recordLastRun(item *CheckItem) {
+	cm.lastRunsMu.Lock()
+	defer cm.lastRunsMu.Unlock()
+	cm.lastRuns[itemKey(item)] = item.LastExecuted
+}
+
+func (cm *CheckManager) pruneLastRuns() {
+	cm.lastRunsMu.Lock()
+	defer cm.lastRunsMu.Unlock()
+
+	valid := make(map[string]struct{})
+	for _, it := range cm.checkQueue.items {
+		if it == nil || it.Generation != cm.generation {
+			continue
+		}
+		valid[itemKey(it)] = struct{}{}
 	}
 
-	// Execute the check
-	w.executeCheck(item)
-
-	// Update last executed time
-	item.LastExecuted = time.Now()
-
-	// Re-queue the check
-	w.manager.checkQueue.Add(item)
+	for k := range cm.lastRuns {
+		if _, ok := valid[k]; !ok {
+			delete(cm.lastRuns, k)
+		}
+	}
 }
 
 func (w *Worker) executeCheck(item *CheckItem) {

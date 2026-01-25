@@ -30,12 +30,18 @@ func keyEndpoint(chk, dom, rpc string, v6 bool) string {
 	return chk + "|" + dom + "|" + rpc + "|v4"
 }
 
-func newestOnly(results []dat.Result) map[string]dat.Result {
+func newestOnly(prefix string, results []dat.Result) map[string]dat.Result {
 	out := make(map[string]dat.Result)
 	for _, r := range results {
-		name := r.Member.Details.Name
-		if prev, ok := out[name]; !ok || r.Checktime.After(prev.Checktime) {
-			out[name] = r
+		key := prefix + "|" + r.Member.Details.Name
+		if r.IsIPv6 {
+			key += "|v6"
+		} else {
+			key += "|v4"
+		}
+
+		if prev, ok := out[key]; !ok || r.Checktime.After(prev.Checktime) {
+			out[key] = r
 		}
 	}
 	return out
@@ -60,8 +66,9 @@ func buildOfflineSiteResults(input []dat.SiteResult) []dat.SiteResult {
 		if _, ok := res[k]; !ok {
 			res[k] = &dat.SiteResult{Check: src.Check, IsIPv6: src.IsIPv6}
 		}
-		latest := newestOnly(src.Results)
-		res[k].Results = append(res[k].Results, sliceFromMap(latest, true)...)
+		latest := newestOnly(k, src.Results)
+		// include both up/down to reflect current status
+		res[k].Results = append(res[k].Results, sliceFromMap(latest, false)...)
 	}
 
 	out := make([]dat.SiteResult, 0, len(res))
@@ -81,8 +88,8 @@ func buildOfflineDomainResults(input []dat.DomainResult) []dat.DomainResult {
 		if _, ok := res[k]; !ok {
 			res[k] = &dat.DomainResult{Check: src.Check, Service: src.Service, Domain: src.Domain, IsIPv6: src.IsIPv6}
 		}
-		latest := newestOnly(src.Results)
-		res[k].Results = append(res[k].Results, sliceFromMap(latest, true)...)
+		latest := newestOnly(k, src.Results)
+		res[k].Results = append(res[k].Results, sliceFromMap(latest, false)...)
 	}
 
 	out := make([]dat.DomainResult, 0, len(res))
@@ -102,8 +109,8 @@ func buildOfflineEndpointResults(input []dat.EndpointResult) []dat.EndpointResul
 		if _, ok := res[k]; !ok {
 			res[k] = &dat.EndpointResult{Check: src.Check, Service: src.Service, Domain: src.Domain, RpcUrl: src.RpcUrl, IsIPv6: src.IsIPv6}
 		}
-		latest := newestOnly(src.Results)
-		res[k].Results = append(res[k].Results, sliceFromMap(latest, true)...)
+		latest := newestOnly(k, src.Results)
+		res[k].Results = append(res[k].Results, sliceFromMap(latest, false)...)
 	}
 
 	out := make([]dat.EndpointResult, 0, len(res))
@@ -182,6 +189,7 @@ func slimResults(res []dat.Result) []interface{} {
 	out := make([]interface{}, 0, len(res))
 	for _, r := range res {
 		out = append(out, map[string]interface{}{
+			"Status":     r.Status,
 			"MemberName": r.Member.Details.Name,
 			"ErrorText":  r.ErrorText,
 			"Data":       r.Data,

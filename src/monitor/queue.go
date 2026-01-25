@@ -17,6 +17,7 @@ type CheckItem struct {
 	Endpoint        string
 	LastExecuted    time.Time
 	MinimumInterval time.Duration
+	Generation      int
 	index           int // Used by heap
 }
 
@@ -31,6 +32,14 @@ func NewCheckQueue() *CheckQueue {
 	}
 	heap.Init(cq)
 	return cq
+}
+
+// Clear removes all queued items. Safe for concurrent callers.
+func (cq *CheckQueue) Clear() {
+	cq.mu.Lock()
+	defer cq.mu.Unlock()
+	cq.items = nil
+	heap.Init(cq)
 }
 
 // Priority queue implementation (heap.Interface)
@@ -73,7 +82,7 @@ func (cq *CheckQueue) Add(item *CheckItem) {
 	heap.Push(cq, item)
 }
 
-func (cq *CheckQueue) GetNext() *CheckItem {
+func (cq *CheckQueue) GetNext(currentGeneration int) *CheckItem {
 	cq.mu.Lock()
 	defer cq.mu.Unlock()
 
@@ -81,14 +90,20 @@ func (cq *CheckQueue) GetNext() *CheckItem {
 		return nil
 	}
 
-	// Check the top of the heap; if it's not ready, none are ready
-	item := cq.items[0]
-	nextRun := item.LastExecuted.Add(item.MinimumInterval)
 	now := time.Now()
-	if now.Before(nextRun) {
-		return nil
+	for cq.Len() > 0 {
+		item := cq.items[0]
+		// Discard stale generations
+		if item.Generation != currentGeneration {
+			heap.Pop(cq)
+			continue
+		}
+		// If the earliest item is not ready, none are
+		nextRun := item.LastExecuted.Add(item.MinimumInterval)
+		if now.Before(nextRun) {
+			return nil
+		}
+		return heap.Pop(cq).(*CheckItem)
 	}
-
-	// Pop the ready item
-	return heap.Pop(cq).(*CheckItem)
+	return nil
 }
