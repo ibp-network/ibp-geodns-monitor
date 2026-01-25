@@ -37,14 +37,10 @@ func NewCheckQueue() *CheckQueue {
 func (cq *CheckQueue) Len() int { return len(cq.items) }
 
 func (cq *CheckQueue) Less(i, j int) bool {
-	// Priority based on how long overdue the check is
-	now := time.Now()
-
+	// Earlier next run time has higher priority; no dependency on current time
 	iNext := cq.items[i].LastExecuted.Add(cq.items[i].MinimumInterval)
 	jNext := cq.items[j].LastExecuted.Add(cq.items[j].MinimumInterval)
-
-	// The one that's been waiting longer gets higher priority
-	return now.Sub(iNext) > now.Sub(jNext)
+	return iNext.Before(jNext)
 }
 
 func (cq *CheckQueue) Swap(i, j int) {
@@ -85,18 +81,14 @@ func (cq *CheckQueue) GetNext() *CheckItem {
 		return nil
 	}
 
-	// Find the highest priority item that's ready to run
+	// Check the top of the heap; if it's not ready, none are ready
+	item := cq.items[0]
+	nextRun := item.LastExecuted.Add(item.MinimumInterval)
 	now := time.Now()
-	for i := 0; i < cq.Len(); i++ {
-		item := cq.items[i]
-		nextRun := item.LastExecuted.Add(item.MinimumInterval)
-		if now.After(nextRun) || now.Equal(nextRun) {
-			// This check is ready to run
-			heap.Remove(cq, i)
-			return item
-		}
+	if now.Before(nextRun) {
+		return nil
 	}
 
-	// No checks are ready
-	return nil
+	// Pop the ready item
+	return heap.Pop(cq).(*CheckItem)
 }

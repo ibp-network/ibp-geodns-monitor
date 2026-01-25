@@ -125,10 +125,14 @@ func Init() {
 		c.Local.MonitorApi.ListenAddress,
 		c.Local.MonitorApi.ListenPort)
 
-	go http.ListenAndServe(
-		c.Local.MonitorApi.ListenAddress+":"+c.Local.MonitorApi.ListenPort,
-		mux,
-	)
+	go func() {
+		if err := http.ListenAndServe(
+			c.Local.MonitorApi.ListenAddress+":"+c.Local.MonitorApi.ListenPort,
+			mux,
+		); err != nil {
+			log.Log(log.Fatal, "Monitor API failed to start: %v", err)
+		}
+	}()
 }
 
 func handleResults(w http.ResponseWriter, r *http.Request) {
