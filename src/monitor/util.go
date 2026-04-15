@@ -125,7 +125,7 @@ func parseUrlForDomain(raw string) string {
 	if err != nil {
 		return ""
 	}
-	return target.Label
+	return target.Hostname
 }
 
 func defaultPortForScheme(scheme string) string {

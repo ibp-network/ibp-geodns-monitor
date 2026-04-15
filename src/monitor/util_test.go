@@ -25,12 +25,12 @@ func TestParseCheckTargetPreservesNonDefaultPortAndPath(t *testing.T) {
 	}
 }
 
-func TestParseUrlForDomainKeepsOnlyMeaningfulPorts(t *testing.T) {
+func TestParseUrlForDomainUsesHostnameOnlyContract(t *testing.T) {
 	if got := parseUrlForDomain("https://rpc.example.com:443"); got != "rpc.example.com" {
 		t.Fatalf("expected default https port to collapse, got %q", got)
 	}
-	if got := parseUrlForDomain("https://rpc.example.com:8443"); got != "rpc.example.com:8443" {
-		t.Fatalf("expected non-default port to be preserved, got %q", got)
+	if got := parseUrlForDomain("https://rpc.example.com:8443"); got != "rpc.example.com" {
+		t.Fatalf("expected domain contract to stay hostname-only, got %q", got)
 	}
 }
 

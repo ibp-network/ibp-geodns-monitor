@@ -26,7 +26,7 @@ func SslCheck(check cfg.Check, domain string, service cfg.Service, member cfg.Me
 	ip4 := member.Service.ServiceIPv4
 	ip6 := member.Service.ServiceIPv6
 	if ip4 == "" && ip6 == "" {
-		UpdateDomainResultLocal(check, target.Label, service, member, false,
+		UpdateDomainResultLocal(check, target.Hostname, service, member, false,
 			"No IPv4 or IPv6 configured", nil, false)
 		return
 	}
@@ -50,7 +50,7 @@ func dialAndCheckTLS(
 	timeout := time.Duration(timeoutSec) * time.Second
 	conn, err := net.DialTimeout("tcp", target.DialAddress(ip), timeout)
 	if err != nil {
-		UpdateDomainResultLocal(check, target.Label, service, member, false,
+		UpdateDomainResultLocal(check, target.Hostname, service, member, false,
 			fmt.Sprintf("TCP connect error: %v", err), nil, isIPv6)
 		return
 	}
@@ -63,7 +63,7 @@ func dialAndCheckTLS(
 	})
 	err = tlsConn.Handshake()
 	if err != nil {
-		UpdateDomainResultLocal(check, target.Label, service, member, false,
+		UpdateDomainResultLocal(check, target.Hostname, service, member, false,
 			fmt.Sprintf("TLS handshake failed: %v", err), nil, isIPv6)
 		return
 	}
@@ -71,7 +71,7 @@ func dialAndCheckTLS(
 
 	certs := tlsConn.ConnectionState().PeerCertificates
 	if len(certs) == 0 {
-		UpdateDomainResultLocal(check, target.Label, service, member, false, "No certificate found", nil, isIPv6)
+		UpdateDomainResultLocal(check, target.Hostname, service, member, false, "No certificate found", nil, isIPv6)
 		return
 	}
 
@@ -91,10 +91,10 @@ func dialAndCheckTLS(
 	}
 
 	if success {
-		UpdateDomainResultLocal(check, target.Label, service, member, true, "", dataMap, isIPv6)
-		log.Log(log.Debug, "SSL check completed for %s %s isIPv6=%v success=%v", member.Details.Name, target.Label, isIPv6, true)
+		UpdateDomainResultLocal(check, target.Hostname, service, member, true, "", dataMap, isIPv6)
+		log.Log(log.Debug, "SSL check completed for %s %s isIPv6=%v success=%v", member.Details.Name, target.URL, isIPv6, true)
 	} else {
-		UpdateDomainResultLocal(check, target.Label, service, member, false, errText, dataMap, isIPv6)
-		log.Log(log.Debug, "SSL check failed for %s %s isIPv6=%v success=%v", member.Details.Name, target.Label, isIPv6, false)
+		UpdateDomainResultLocal(check, target.Hostname, service, member, false, errText, dataMap, isIPv6)
+		log.Log(log.Debug, "SSL check failed for %s %s isIPv6=%v success=%v", member.Details.Name, target.URL, isIPv6, false)
 	}
 }
