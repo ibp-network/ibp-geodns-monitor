@@ -11,6 +11,11 @@ import (
 	cfg "github.com/ibp-network/ibp-geodns-libs/config"
 )
 
+var (
+	getOfficialResults = dat.GetOfficialResults
+	getLocalResults    = dat.GetLocalResults
+)
+
 func keySite(chk string, v6 bool) string {
 	if v6 {
 		return chk + "|v6"
@@ -142,8 +147,42 @@ func Init() {
 	}()
 }
 
+func hasUsableSnapshot(siteResults []dat.SiteResult, domainResults []dat.DomainResult, endpointResults []dat.EndpointResult) bool {
+	for _, item := range siteResults {
+		if len(item.Results) > 0 {
+			return true
+		}
+	}
+	for _, item := range domainResults {
+		if len(item.Results) > 0 {
+			return true
+		}
+	}
+	for _, item := range endpointResults {
+		if len(item.Results) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func selectResultsForAPI() ([]dat.SiteResult, []dat.DomainResult, []dat.EndpointResult, string) {
+	offSites, offDomains, offEndpoints := getOfficialResults()
+	if hasUsableSnapshot(offSites, offDomains, offEndpoints) {
+		return offSites, offDomains, offEndpoints, "official"
+	}
+
+	localSites, localDomains, localEndpoints := getLocalResults()
+	if hasUsableSnapshot(localSites, localDomains, localEndpoints) {
+		log.Log(log.Debug, "Official snapshot empty; serving local monitor results")
+		return localSites, localDomains, localEndpoints, "local"
+	}
+
+	return offSites, offDomains, offEndpoints, "official"
+}
+
 func handleResults(w http.ResponseWriter, r *http.Request) {
-	offSites, offDomains, offEndpoints := dat.GetOfficialResults()
+	offSites, offDomains, offEndpoints, source := selectResultsForAPI()
 
 	apiSites := make([]interface{}, 0)
 	for _, s := range buildOfflineSiteResults(offSites) {
@@ -182,6 +221,7 @@ func handleResults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-IBP-Results-Source", source)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
