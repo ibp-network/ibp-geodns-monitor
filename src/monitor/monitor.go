@@ -1,21 +1,39 @@
 package monitor
 
 import (
+	"sync"
+
 	log "github.com/ibp-network/ibp-geodns-libs/logging"
 )
 
-var manager *CheckManager
+var (
+	manager   *CheckManager
+	managerMu sync.Mutex
+)
 
 func Init() {
 	log.Log(log.Debug, "Monitor Package initializing...")
 
-	// Create and start the check manager
+	managerMu.Lock()
+	current := manager
 	manager = NewCheckManager()
-	manager.Start()
+	next := manager
+	managerMu.Unlock()
+
+	if current != nil {
+		current.Stop()
+	}
+
+	next.Start()
 }
 
 func Shutdown() {
-	if manager != nil {
-		manager.Stop()
+	managerMu.Lock()
+	current := manager
+	manager = nil
+	managerMu.Unlock()
+
+	if current != nil {
+		current.Stop()
 	}
 }

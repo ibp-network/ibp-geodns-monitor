@@ -17,7 +17,7 @@ type CheckItem struct {
 	Endpoint        string
 	LastExecuted    time.Time
 	MinimumInterval time.Duration
-	Generation      int
+	Generation      int64
 	index           int // Used by heap
 }
 
@@ -40,6 +40,23 @@ func (cq *CheckQueue) Clear() {
 	defer cq.mu.Unlock()
 	cq.items = nil
 	heap.Init(cq)
+}
+
+// Count returns the number of queued items.
+func (cq *CheckQueue) Count() int {
+	cq.mu.Lock()
+	defer cq.mu.Unlock()
+	return len(cq.items)
+}
+
+// Snapshot returns a shallow copy of the current queue contents for safe iteration.
+func (cq *CheckQueue) Snapshot() []*CheckItem {
+	cq.mu.Lock()
+	defer cq.mu.Unlock()
+
+	out := make([]*CheckItem, len(cq.items))
+	copy(out, cq.items)
+	return out
 }
 
 // Priority queue implementation (heap.Interface)
@@ -82,7 +99,7 @@ func (cq *CheckQueue) Add(item *CheckItem) {
 	heap.Push(cq, item)
 }
 
-func (cq *CheckQueue) GetNext(currentGeneration int) *CheckItem {
+func (cq *CheckQueue) GetNext(currentGeneration int64) *CheckItem {
 	cq.mu.Lock()
 	defer cq.mu.Unlock()
 

@@ -18,9 +18,15 @@ import (
 	natsCommon "github.com/ibp-network/ibp-geodns-libs/nats"
 )
 
-var version = cfg.GetVersion()
+var (
+	version   string
+	buildTime string
+)
 
 func main() {
+	if version == "" {
+		version = cfg.GetVersion()
+	}
 	log.Log(log.Info, "IBPMonitor %s starting...", version)
 
 	cfgPath := flag.String("config", "ibpmonitor.json", "Path to the configuration file")

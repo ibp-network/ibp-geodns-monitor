@@ -1,7 +1,6 @@
 package monitor
 
 import (
-	"net/url"
 	"strings"
 
 	cfg "github.com/ibp-network/ibp-geodns-libs/config"
@@ -172,18 +171,4 @@ func extractDomains(s cfg.Service) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func parseUrlForDomain(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
 }

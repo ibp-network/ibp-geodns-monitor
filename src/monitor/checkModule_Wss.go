@@ -10,7 +10,6 @@ import (
 
 	cfg "github.com/ibp-network/ibp-geodns-libs/config"
 	log "github.com/ibp-network/ibp-geodns-libs/logging"
-	max "github.com/ibp-network/ibp-geodns-libs/maxmind"
 
 	"github.com/gorilla/websocket"
 )
@@ -22,12 +21,30 @@ type JSONRPCRequest struct {
 	ID      int           `json:"id"`
 }
 
+type JSONRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int             `json:"id"`
+	Result  json.RawMessage `json:"result"`
+	Error   *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 func init() {
 	// WSS check is only valid for RPC service type
 	RegisterEndpointCheckWithTypes("wss", WssCheck, []string{"RPC"})
 }
 
 func WssCheck(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member) {
+	target, err := parseCheckTarget(endpoint, "wss")
+	if err != nil {
+		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Invalid WebSocket target: %v", err), nil, false)
+		return
+	}
+	target.Scheme = websocketSchemeForTarget(target.Scheme)
+	target.URL = buildTargetURL(target.Scheme, target.Hostname, target.Port, target.RequestURI)
+
 	ip4 := member.Service.ServiceIPv4
 	ip6 := member.Service.ServiceIPv6
 	readTimeoutSec := getIntOption(check.ExtraOptions, "ReadTimeout", 15)
@@ -38,31 +55,28 @@ func WssCheck(check cfg.Check, endpoint string, service cfg.Service, member cfg.
 	}
 
 	if ip4 != "" {
-		runWssSingle(check, endpoint, service, member, ip4, false, readTimeoutSec)
+		runWssSingle(check, endpoint, target, service, member, ip4, false, readTimeoutSec)
 	}
 
 	if ip6 != "" {
-		runWssSingle(check, endpoint, service, member, ip6, true, readTimeoutSec)
+		runWssSingle(check, endpoint, target, service, member, ip6, true, readTimeoutSec)
 	}
 }
 
-func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member, ip string, isIPv6 bool, readTimeoutSec int) {
-	u := max.ParseUrl(endpoint)
-	reconstructedURL := fmt.Sprintf("%s%s%s", u.Protocol, u.Domain, u.Directory)
-
+func runWssSingle(check cfg.Check, endpoint string, target CheckTarget, service cfg.Service, member cfg.Member, ip string, isIPv6 bool, readTimeoutSec int) {
 	dialer := websocket.Dialer{
 		TLSClientConfig: &tls.Config{
-			ServerName:         u.Domain,
+			ServerName:         target.Hostname,
 			InsecureSkipVerify: false,
 		},
 		NetDial: func(network, addr string) (net.Conn, error) {
-			return net.DialTimeout(network, net.JoinHostPort(ip, "443"),
+			return net.DialTimeout(network, target.DialAddress(ip),
 				time.Duration(getIntOption(check.ExtraOptions, "ConnectTimeout", 10))*time.Second)
 		},
 		HandshakeTimeout: time.Duration(getIntOption(check.ExtraOptions, "ConnectTimeout", 10)) * time.Second,
 	}
 
-	c, _, err := dialer.Dial(reconstructedURL, nil)
+	c, _, err := dialer.Dial(target.URL, nil)
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Failed to connect on IP=%s => %v", ip, err), nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
@@ -73,7 +87,7 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 	request := JSONRPCRequest{
 		JSONRPC: "2.0",
 		Method:  "chain_getBlockHash",
-		Params:  []interface{}{"latest"},
+		Params:  []interface{}{},
 		ID:      1,
 	}
 
@@ -83,8 +97,13 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 		return
 	}
 
-	if _, readErr := readWithDeadline(c, readTimeoutSec, "chain_getBlockHash(latest)"); readErr != nil {
-		UpdateEndpointResultLocal(check, member, service, endpoint, false, readErr.Error(), nil, isIPv6)
+	var latestBlockHash string
+	if err := readJSONRPCResult(c, readTimeoutSec, "chain_getBlockHash()", &latestBlockHash); err != nil || latestBlockHash == "" {
+		errText := "chain_getBlockHash() returned an empty result"
+		if err != nil {
+			errText = err.Error()
+		}
+		UpdateEndpointResultLocal(check, member, service, endpoint, false, errText, nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
 		return
 	}
@@ -115,7 +134,8 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 		return
 	}
 
-	hasEnoughPeers, isSyncing, err := checkPeers(c, readTimeoutSec)
+	minPeers := getIntOption(check.ExtraOptions, "MinimumPeers", 5)
+	hasEnoughPeers, isSyncing, peerCount, err := checkPeers(c, readTimeoutSec, minPeers)
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Peer check failed: %v", err), nil, isIPv6)
 		log.Log(log.Debug, "WSS check failed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, false)
@@ -131,10 +151,11 @@ func runWssSingle(check cfg.Check, endpoint string, service cfg.Service, member 
 	log.Log(log.Debug, "WSS check completed for %s %s isIPv6=%v success=%v", member.Details.Name, endpoint, isIPv6, true)
 	UpdateEndpointResultLocal(check, member, service, endpoint, true, "",
 		map[string]interface{}{
-			"Syncing": isSyncing,
-			"Peers":   hasEnoughPeers,
-			"Network": isCorrectNetwork,
-			"Archive": isFullArchive,
+			"Syncing":   isSyncing,
+			"Peers":     hasEnoughPeers,
+			"PeerCount": peerCount,
+			"Network":   isCorrectNetwork,
+			"Archive":   isFullArchive,
 		}, isIPv6)
 }
 
@@ -151,18 +172,12 @@ func checkFullArchive(c *websocket.Conn, readTimeoutSec int) (bool, error) {
 		return false, fmt.Errorf("failed to send blockHash(0) request")
 	}
 
-	message, err := readWithDeadline(c, readTimeoutSec, "chain_getBlockHash(0)")
-	if err != nil {
+	var result string
+	if err := readJSONRPCResult(c, readTimeoutSec, "chain_getBlockHash(0)", &result); err != nil {
 		return false, err
 	}
 
-	var resp map[string]interface{}
-	if err := json.Unmarshal(message, &resp); err != nil {
-		return false, err
-	}
-
-	result, ok := resp["result"].(string)
-	if !ok || result == "" {
+	if result == "" {
 		return false, fmt.Errorf("invalid chain_getBlockHash(0) response")
 	}
 
@@ -181,19 +196,9 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 		return false, fmt.Errorf("failed to send system_chain request")
 	}
 
-	message, err := readWithDeadline(c, readTimeoutSec, "system_chain")
-	if err != nil {
+	var chain string
+	if err := readJSONRPCResult(c, readTimeoutSec, "system_chain", &chain); err != nil {
 		return false, err
-	}
-
-	var resp map[string]interface{}
-	if err := json.Unmarshal(message, &resp); err != nil {
-		return false, err
-	}
-
-	chain, ok := resp["result"].(string)
-	if !ok {
-		return false, fmt.Errorf("invalid system_chain result")
 	}
 
 	if !strings.EqualFold(chain, expectedNetwork) {
@@ -219,18 +224,11 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 		return false, fmt.Errorf("failed to send chain_getBlockHash(0) for genesis block")
 	}
 
-	blockHashMessage, err := readWithDeadline(c, readTimeoutSec, "chain_getBlockHash(0)")
-	if err != nil {
-		return false, err
+	var genesisBlockHash string
+	if err := readJSONRPCResult(c, readTimeoutSec, "chain_getBlockHash(0)", &genesisBlockHash); err != nil {
+		return false, fmt.Errorf("failed to read genesis block hash response: %v", err)
 	}
-
-	var blockHashResp map[string]interface{}
-	if err := json.Unmarshal(blockHashMessage, &blockHashResp); err != nil {
-		return false, fmt.Errorf("failed to unmarshal genesis block hash response: %v", err)
-	}
-
-	genesisBlockHash, ok := blockHashResp["result"].(string)
-	if !ok || genesisBlockHash == "" {
+	if genesisBlockHash == "" {
 		return false, fmt.Errorf("invalid genesis block hash response")
 	}
 
@@ -246,20 +244,10 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 		return false, fmt.Errorf("failed to send chain_getHeader request for genesis block")
 	}
 
-	headerMessage, err := readWithDeadline(c, readTimeoutSec, "chain_getHeader(genesis)")
-	if err != nil {
-		return false, err
-	}
-
-	var headerResp map[string]interface{}
-	if err := json.Unmarshal(headerMessage, &headerResp); err != nil {
-		return false, fmt.Errorf("failed to unmarshal genesis header response: %v", err)
-	}
-
 	// Extract state root from genesis block header
-	header, ok := headerResp["result"].(map[string]interface{})
-	if !ok {
-		return false, fmt.Errorf("invalid genesis header response format")
+	header := make(map[string]interface{})
+	if err := readJSONRPCResult(c, readTimeoutSec, "chain_getHeader(genesis)", &header); err != nil {
+		return false, fmt.Errorf("failed to read genesis header response: %v", err)
 	}
 
 	genesisStateRoot, ok := header["stateRoot"].(string)
@@ -277,7 +265,7 @@ func checkNetwork(c *websocket.Conn, expectedNetwork string, expectedStateRootHa
 	return true, nil
 }
 
-func checkPeers(c *websocket.Conn, readTimeoutSec int) (bool, bool, error) {
+func checkPeers(c *websocket.Conn, readTimeoutSec int, minPeers int) (bool, bool, int64, error) {
 	req := JSONRPCRequest{
 		JSONRPC: "2.0",
 		Method:  "system_health",
@@ -285,37 +273,27 @@ func checkPeers(c *websocket.Conn, readTimeoutSec int) (bool, bool, error) {
 	}
 
 	if !sendJSONRPCRequest(c, req) {
-		return false, false, fmt.Errorf("failed to send system_health request")
+		return false, false, 0, fmt.Errorf("failed to send system_health request")
 	}
 
-	message, err := readWithDeadline(c, readTimeoutSec, "system_health")
-	if err != nil {
-		return false, false, err
+	result := make(map[string]interface{})
+	if err := readJSONRPCResult(c, readTimeoutSec, "system_health", &result); err != nil {
+		return false, false, 0, err
 	}
 
-	var resp map[string]interface{}
-	if err := json.Unmarshal(message, &resp); err != nil {
-		return false, false, err
-	}
-
-	result, ok := resp["result"].(map[string]interface{})
+	peers, ok := parseFlexibleInt(result["peers"])
 	if !ok {
-		return false, false, fmt.Errorf("invalid system_health result")
-	}
-
-	peersF, ok := result["peers"].(float64)
-	if !ok {
-		return false, false, fmt.Errorf("invalid peers field")
+		return false, false, 0, fmt.Errorf("invalid peers field")
 	}
 
 	syncing, ok := result["isSyncing"].(bool)
 	if !ok {
-		return false, false, fmt.Errorf("invalid isSyncing field")
+		return false, false, 0, fmt.Errorf("invalid isSyncing field")
 	}
 
-	hasEnoughPeers := peersF > 5
+	hasEnoughPeers := peers >= int64(minPeers)
 
-	return hasEnoughPeers, syncing, nil
+	return hasEnoughPeers, syncing, peers, nil
 }
 
 func sendJSONRPCRequest(c *websocket.Conn, request JSONRPCRequest) bool {
@@ -343,4 +321,46 @@ func readWithDeadline(c *websocket.Conn, timeoutSec int, desc string) ([]byte, e
 		return nil, fmt.Errorf("%s: %w", desc, err)
 	}
 	return message, nil
+}
+
+func readJSONRPCResponse(c *websocket.Conn, timeoutSec int, desc string) (JSONRPCResponse, error) {
+	message, err := readWithDeadline(c, timeoutSec, desc)
+	if err != nil {
+		return JSONRPCResponse{}, err
+	}
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(message, &resp); err != nil {
+		return JSONRPCResponse{}, fmt.Errorf("%s: failed to decode response: %w", desc, err)
+	}
+	if resp.Error != nil {
+		return JSONRPCResponse{}, fmt.Errorf("%s: rpc error %d: %s", desc, resp.Error.Code, resp.Error.Message)
+	}
+	if len(resp.Result) == 0 {
+		return JSONRPCResponse{}, fmt.Errorf("%s: missing result", desc)
+	}
+	return resp, nil
+}
+
+func readJSONRPCResult(c *websocket.Conn, timeoutSec int, desc string, target interface{}) error {
+	resp, err := readJSONRPCResponse(c, timeoutSec, desc)
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return nil
+	}
+	if err := json.Unmarshal(resp.Result, target); err != nil {
+		return fmt.Errorf("%s: invalid result: %w", desc, err)
+	}
+	return nil
+}
+
+func websocketSchemeForTarget(scheme string) string {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "http", "ws":
+		return "ws"
+	default:
+		return "wss"
+	}
 }

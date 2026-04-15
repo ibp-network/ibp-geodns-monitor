@@ -73,7 +73,7 @@ clean:
 ## test: Run tests
 test:
 	@echo "${GREEN}Running tests...${NC}"
-	$(GOTEST) -v ./src/...
+	$(GOTEST) -v ./...
 	@echo "${GREEN}Tests complete${NC}"
 
 ## deps: Download and verify dependencies
@@ -110,6 +110,7 @@ lint:
 
 ## run: Build and run the monitor
 run: build
+	@test -f $(CONFIG_FILE) || (echo "${RED}Missing config file: $(CONFIG_FILE). Use docs/monitor.conf as a starting point.${NC}" && exit 1)
 	@echo "${GREEN}Starting $(BINARY_NAME)...${NC}"
 	./$(BUILD_DIR)/$(BINARY_NAME) -config $(CONFIG_FILE)
 
@@ -128,7 +129,7 @@ uninstall:
 ## docker-build: Build Docker image
 docker-build:
 	@echo "${GREEN}Building Docker image...${NC}"
-	docker build -t ibp-geodns-monitor:$(VERSION) .
+	docker build --build-arg VERSION=$(VERSION) --build-arg BUILD_TIME=$(BUILD_TIME) -t ibp-geodns-monitor:$(VERSION) .
 	@echo "${GREEN}Docker build complete${NC}"
 
 ## check: Run fmt, vet, and test

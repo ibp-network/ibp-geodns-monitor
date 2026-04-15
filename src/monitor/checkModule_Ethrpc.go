@@ -15,7 +15,6 @@ import (
 
 	cfg "github.com/ibp-network/ibp-geodns-libs/config"
 	log "github.com/ibp-network/ibp-geodns-libs/logging"
-	max "github.com/ibp-network/ibp-geodns-libs/maxmind"
 )
 
 type EthRPCRequest struct {
@@ -41,6 +40,14 @@ func init() {
 }
 
 func EthrpcCheck(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member) {
+	target, err := parseCheckTarget(endpoint, "https")
+	if err != nil {
+		UpdateEndpointResultLocal(check, member, service, endpoint, false, fmt.Sprintf("Invalid HTTP RPC target: %v", err), nil, false)
+		return
+	}
+	target.Scheme = httpSchemeForTarget(target.Scheme)
+	target.URL = buildTargetURL(target.Scheme, target.Hostname, target.Port, target.RequestURI)
+
 	ip4 := member.Service.ServiceIPv4
 	ip6 := member.Service.ServiceIPv6
 
@@ -50,42 +57,29 @@ func EthrpcCheck(check cfg.Check, endpoint string, service cfg.Service, member c
 	}
 
 	if ip4 != "" {
-		runEthrpcSingle(check, endpoint, service, member, ip4, false)
+		runEthrpcSingle(check, endpoint, target, service, member, ip4, false)
 	}
 	if ip6 != "" {
-		runEthrpcSingle(check, endpoint, service, member, ip6, true)
+		runEthrpcSingle(check, endpoint, target, service, member, ip6, true)
 	}
 }
 
-func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, member cfg.Member, ip string, isIPv6 bool) {
-	u := max.ParseUrl(endpoint)
-
-	// Convert WSS to HTTPS for ETH RPC
-	protocol := u.Protocol
-	if strings.HasPrefix(protocol, "wss://") {
-		protocol = "https://"
-	} else if strings.HasPrefix(protocol, "ws://") {
-		protocol = "http://"
-	}
-
-	// Reconstruct URL - using domain name, not IP
-	reconstructedURL := fmt.Sprintf("%s%s%s", protocol, u.Domain, u.Directory)
-
+func runEthrpcSingle(check cfg.Check, endpoint string, target CheckTarget, service cfg.Service, member cfg.Member, ip string, isIPv6 bool) {
 	log.Log(log.Debug, "ETHRPC check: endpoint=%s => url=%s (connecting via %s) for %s",
-		endpoint, reconstructedURL, ip, member.Details.Name)
+		endpoint, target.URL, ip, member.Details.Name)
 
 	// Create HTTP client with custom transport that redirects to IP
 	timeoutSec := getIntOption(check.ExtraOptions, "ConnectTimeout", 10)
 
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			ServerName: u.Domain,
+			ServerName: target.Hostname,
 		},
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// addr will be "domain:port", we replace with "ip:port"
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
-				return nil, err
+				port = target.Port
 			}
 
 			log.Log(log.Debug, "ETHRPC dial: intercepting %s:%s => %s:%s", host, port, ip, port)
@@ -103,7 +97,7 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 	}
 
 	// Test 1: Check eth_chainId
-	chainId, err := ethCall(client, reconstructedURL, "eth_chainId", []interface{}{})
+	chainId, err := ethCall(client, target.URL, "eth_chainId", []interface{}{})
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false,
 			fmt.Sprintf("eth_chainId failed: %v", err), nil, isIPv6)
@@ -113,7 +107,7 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 	}
 
 	// Test 2: Check eth_blockNumber
-	blockNumber, err := ethCall(client, reconstructedURL, "eth_blockNumber", []interface{}{})
+	blockNumber, err := ethCall(client, target.URL, "eth_blockNumber", []interface{}{})
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false,
 			fmt.Sprintf("eth_blockNumber failed: %v", err), nil, isIPv6)
@@ -123,7 +117,7 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 	}
 
 	// Test 3: Check net_version
-	netVersion, err := ethCall(client, reconstructedURL, "net_version", []interface{}{})
+	netVersion, err := ethCall(client, target.URL, "net_version", []interface{}{})
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false,
 			fmt.Sprintf("net_version failed: %v", err), nil, isIPv6)
@@ -133,7 +127,7 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 	}
 
 	// Test 4: Check eth_syncing - must be false
-	syncingResult, err := ethCall(client, reconstructedURL, "eth_syncing", []interface{}{})
+	syncingResult, err := ethCall(client, target.URL, "eth_syncing", []interface{}{})
 	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false,
 			fmt.Sprintf("eth_syncing failed: %v", err), nil, isIPv6)
@@ -142,13 +136,11 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 		return
 	}
 
-	// Check if syncing is false
-	var syncing bool
-	if err := json.Unmarshal(syncingResult, &syncing); err != nil {
-		// If it's not a boolean, it might be an object (meaning it's syncing)
+	syncing, err := parseEthSyncing(syncingResult)
+	if err != nil {
 		UpdateEndpointResultLocal(check, member, service, endpoint, false,
-			"Node is syncing", nil, isIPv6)
-		log.Log(log.Debug, "ETHRPC check failed for %s %s isIPv6=%v - Node is syncing",
+			fmt.Sprintf("Invalid eth_syncing response: %v", err), nil, isIPv6)
+		log.Log(log.Debug, "ETHRPC check failed for %s %s isIPv6=%v - invalid eth_syncing response",
 			member.Details.Name, endpoint, isIPv6)
 		return
 	}
@@ -163,32 +155,39 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 
 	// Parse responses
 	var chainIdStr string
-	json.Unmarshal(chainId, &chainIdStr)
+	if err := json.Unmarshal(chainId, &chainIdStr); err != nil || strings.TrimSpace(chainIdStr) == "" {
+		UpdateEndpointResultLocal(check, member, service, endpoint, false,
+			"Invalid eth_chainId response", nil, isIPv6)
+		log.Log(log.Debug, "ETHRPC check failed for %s %s isIPv6=%v - invalid eth_chainId response",
+			member.Details.Name, endpoint, isIPv6)
+		return
+	}
 
 	var blockNumberStr string
-	json.Unmarshal(blockNumber, &blockNumberStr)
+	if err := json.Unmarshal(blockNumber, &blockNumberStr); err != nil || strings.TrimSpace(blockNumberStr) == "" {
+		UpdateEndpointResultLocal(check, member, service, endpoint, false,
+			"Invalid eth_blockNumber response", nil, isIPv6)
+		log.Log(log.Debug, "ETHRPC check failed for %s %s isIPv6=%v - invalid eth_blockNumber response",
+			member.Details.Name, endpoint, isIPv6)
+		return
+	}
 
 	var netVersionStr string
-	json.Unmarshal(netVersion, &netVersionStr)
+	if err := json.Unmarshal(netVersion, &netVersionStr); err != nil || strings.TrimSpace(netVersionStr) == "" {
+		UpdateEndpointResultLocal(check, member, service, endpoint, false,
+			"Invalid net_version response", nil, isIPv6)
+		log.Log(log.Debug, "ETHRPC check failed for %s %s isIPv6=%v - invalid net_version response",
+			member.Details.Name, endpoint, isIPv6)
+		return
+	}
 
 	// Verify chain matches expected network
-	expectedNetwork := strings.ToLower(service.Configuration.NetworkName)
+	expectedNetwork := strings.TrimSpace(service.Configuration.NetworkName)
 
-	// Convert hex chainId to decimal for comparison if needed
-	var chainIdDecimal int64
-	if strings.HasPrefix(chainIdStr, "0x") {
-		chainIdDecimal, _ = strconv.ParseInt(chainIdStr[2:], 16, 64)
-	}
+	chainIdDecimal, chainIDValid := parseChainID(chainIdStr)
 
 	// Check if network matches - compare both net_version and chainId
-	networkMatches := false
-	if strings.EqualFold(netVersionStr, expectedNetwork) {
-		networkMatches = true
-	} else if strings.EqualFold(chainIdStr, expectedNetwork) {
-		networkMatches = true
-	} else if fmt.Sprintf("%d", chainIdDecimal) == expectedNetwork {
-		networkMatches = true
-	}
+	networkMatches := matchesEthNetwork(expectedNetwork, netVersionStr, chainIdStr, chainIdDecimal, chainIDValid)
 
 	log.Log(log.Debug, "ETHRPC network check for %s: expected=%s, chainId=%s, chainIdDec=%d, netVersion=%s, matches=%v",
 		member.Details.Name, expectedNetwork, chainIdStr, chainIdDecimal, netVersionStr, networkMatches)
@@ -215,6 +214,79 @@ func runEthrpcSingle(check cfg.Check, endpoint string, service cfg.Service, memb
 	UpdateEndpointResultLocal(check, member, service, endpoint, true, "", dataMap, isIPv6)
 	log.Log(log.Debug, "ETHRPC check completed for %s %s isIPv6=%v success=%v",
 		member.Details.Name, endpoint, isIPv6, true)
+}
+
+func parseEthSyncing(result json.RawMessage) (bool, error) {
+	payload := strings.TrimSpace(string(result))
+	switch strings.ToLower(payload) {
+	case "false", "null":
+		return false, nil
+	case "true":
+		return true, nil
+	}
+
+	var syncing bool
+	if err := json.Unmarshal(result, &syncing); err == nil {
+		return syncing, nil
+	}
+
+	var syncObject map[string]interface{}
+	if err := json.Unmarshal(result, &syncObject); err == nil && syncObject != nil {
+		return true, nil
+	}
+
+	var syncString string
+	if err := json.Unmarshal(result, &syncString); err == nil {
+		switch strings.ToLower(strings.TrimSpace(syncString)) {
+		case "false", "":
+			return false, nil
+		case "true":
+			return true, nil
+		}
+	}
+
+	return false, fmt.Errorf("unexpected payload %s", payload)
+}
+
+func parseChainID(chainID string) (int64, bool) {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return 0, false
+	}
+
+	if strings.HasPrefix(strings.ToLower(chainID), "0x") {
+		out, err := strconv.ParseInt(chainID[2:], 16, 64)
+		return out, err == nil
+	}
+
+	out, err := strconv.ParseInt(chainID, 10, 64)
+	return out, err == nil
+}
+
+func matchesEthNetwork(expectedNetwork, netVersion, chainID string, chainIDDecimal int64, chainIDValid bool) bool {
+	expectedNetwork = strings.TrimSpace(expectedNetwork)
+	if expectedNetwork == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(netVersion), expectedNetwork) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(chainID), expectedNetwork) {
+		return true
+	}
+	if chainIDValid && fmt.Sprintf("%d", chainIDDecimal) == expectedNetwork {
+		return true
+	}
+	return false
+}
+
+func httpSchemeForTarget(scheme string) string {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "http", "ws":
+		return "http"
+	default:
+		return "https"
+	}
 }
 
 func ethCall(client *http.Client, url string, method string, params []interface{}) (json.RawMessage, error) {
