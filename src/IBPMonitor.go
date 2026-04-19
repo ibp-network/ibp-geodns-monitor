@@ -62,6 +62,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	activeMonitors := waitForMonitorPeerDiscovery(
+		monitorPeerDiscoveryTimeout,
+		monitorPeerDiscoveryInterval,
+		natsCommon.CountActiveMonitors,
+	)
+	if activeMonitors >= monitorPeerDiscoveryTarget {
+		log.Log(log.Info, "Consensus warmup detected %d active monitor(s); starting checks", activeMonitors)
+	} else {
+		log.Log(log.Warn, "Consensus warmup timed out with %d active monitor(s); starting checks anyway", activeMonitors)
+	}
+
 	monitor.Init()
 	api.Init()
 
