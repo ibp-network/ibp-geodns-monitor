@@ -23,6 +23,12 @@ var (
 	buildTime string
 )
 
+const (
+	monitorPeerDiscoveryTarget   = 2
+	monitorPeerDiscoveryTimeout  = 3 * time.Second
+	monitorPeerDiscoveryInterval = 100 * time.Millisecond
+)
+
 func main() {
 	if version == "" {
 		version = cfg.GetVersion()
@@ -84,4 +90,32 @@ func main() {
 	log.Log(log.Info, "Shutdown signal received, cleaning up...")
 	monitor.Shutdown()
 	time.Sleep(1 * time.Second) // Give time for cleanup
+}
+
+func waitForMonitorPeerDiscovery(timeout, interval time.Duration, countActive func() int) int {
+	if countActive == nil {
+		return 0
+	}
+
+	active := countActive()
+	if active >= monitorPeerDiscoveryTarget || timeout <= 0 {
+		return active
+	}
+	if interval <= 0 {
+		interval = monitorPeerDiscoveryInterval
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for active < monitorPeerDiscoveryTarget {
+		if time.Now().After(deadline) {
+			break
+		}
+		<-ticker.C
+		active = countActive()
+	}
+
+	return active
 }
