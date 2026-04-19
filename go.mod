@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	github.com/go-ping/ping v1.2.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/ibp-network/ibp-geodns-libs v0.6.10
+	github.com/ibp-network/ibp-geodns-libs v0.6.12
 )
 
 require (
